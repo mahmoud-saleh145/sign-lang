@@ -1,0 +1,63 @@
+{
+  "modelVersion": "1.0.0",
+  "language": "ArSL",
+  "languageDisplayName": "Arabic Sign Language (alphabet)",
+  "dataset": {
+    "name": "ArSL-31 Alphabet Landmark Dataset",
+    "source": "Zenodo (uploaded by user), CC BY 4.0",
+    "license": "CC BY 4.0",
+    "sampleCount": 7010,
+    "classCount": 31
+  },
+  "classes": [
+    "3ayn",
+    "7a2",
+    "9af",
+    "Alef",
+    "Ba2",
+    "Chin",
+    "DDad",
+    "Dal",
+    "Delete",
+    "Fa2",
+    "Finish",
+    "Ghayn",
+    "Ha2",
+    "Jim",
+    "Kaf",
+    "Kha2",
+    "Lam",
+    "Mim",
+    "Noon",
+    "Ra2",
+    "SSad",
+    "Sin",
+    "Space",
+    "TTa2",
+    "TTha2",
+    "Ta2",
+    "Tha2",
+    "Thal",
+    "Waw",
+    "Ya2",
+    "Zayn"
+  ],
+  "featureFormat": {
+    "count": 89,
+    "order": "see types/features.ts FEATURE_NAMES"
+  },
+  "preprocessingVersion": "1.0.0",
+  "confidenceThreshold": 0.75,
+  "temporalWindow": {
+    "minStableFrames": 8,
+    "maxGapFrames": 6
+  },
+  "modelArchitecture": "MLP 89-64-31, ReLU hidden, softmax output (sklearn MLPClassifier, exported as raw weights)",
+  "evaluation": {
+    "testAccuracy": 0.9943,
+    "macroF1": 0.9942,
+    "signerIndependent": false,
+    "notes": "Dataset has no signer-ID column; split is stratified-random, not signer-independent. Real risk of inflated accuracy if the same signer's near-duplicate frames span splits."
+  },
+  "trainingDate": "2026-08-08T11:12:01.507851+00:00"
+}

@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg: #0b1220;
+  --color-surface: #141b2e;
+  --color-surface-raised: #1c2540;
+  --color-text: #f3f5f8;
+  --color-text-dim: #9aa4bd;
+  --color-accent-active: #4fd1c5;
+  --color-accent-candidate: #f5a623;
+  --color-accent-error: #f0517a;
+  /* System-font fallbacks; swap for next/font/google output on a host with
+     internet access. See app/layout.tsx for details. */
+  --font-display: "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-body: ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", ui-monospace, Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body), system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: contain;
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display), system-ui, sans-serif;
+}
+
+.font-mono {
+  font-family: var(--font-mono), monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--color-accent-active);
+  outline-offset: 2px;
+}
