@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next"
 
 /**
  * NOTE ON FONTS: this project is designed around Space Grotesk (display),
@@ -32,6 +33,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
+        <Analytics />
         {children}
       </body>
     </html>
