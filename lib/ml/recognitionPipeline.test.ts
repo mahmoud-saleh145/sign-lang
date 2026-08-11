@@ -16,7 +16,7 @@ const streamFixture = JSON.parse(
     path.resolve(__dirname, "../../ml/tests/fixtures/continuous_stream_fixture.json"),
     "utf-8"
   )
-) as { Alef: HandLandmarks[]; Ba2: HandLandmarks[] };
+) as Record<"Alef" | "Ba2" | "Space" | "7a2" | "Kaf" | "Noon" | "Delete", HandLandmarks[]>;
 
 /** Build a FrameDetection sequence: `null` = no hand (idle), otherwise cycles
  * through the given class's real landmark samples. */
@@ -31,12 +31,12 @@ function buildStream(
         segment.label === null
           ? []
           : [
-              {
-                landmarks: streamFixture[segment.label][i % streamFixture[segment.label].length],
-                handedness: "Right" as const,
-                score: 0.95,
-              },
-            ];
+            {
+              landmarks: streamFixture[segment.label][i % streamFixture[segment.label].length],
+              handedness: "Right" as const,
+              score: 0.95,
+            },
+          ];
       stream.push({ timestampMs: t, hands });
       t += 33; // ~30fps
     }
@@ -194,5 +194,123 @@ describe("SignRecognitionPipeline — continuous stream, real trained model", ()
     const [entry] = pipeline.getTranscript();
     expect(entry.sign).toBe("Alef"); // internal model class name, unchanged
     expect(entry.displayLabel).toBe("\u0627"); // ا, user-facing only
+  });
+});
+
+describe("SignRecognitionPipeline — word spacing (real Space class, real model)", () => {
+  let classifier: ArSLClassifier;
+
+  beforeAll(() => {
+    classifier = new ArSLClassifier(weights);
+    // Sanity: the real model must actually classify real Space landmarks as
+    // "Space" for these tests to be meaningful.
+    const check = classifier.predict(extractFeatures(streamFixture.Space[0]));
+    expect(check.label).toBe("Space");
+  });
+
+  it("letters accumulate into a word (real model, with idle gaps between signs)", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    const stream = buildStream([
+      { label: "Ba2", frames: 12 }, { label: null, frames: 8 },
+      { label: "7a2", frames: 12 }, { label: null, frames: 8 },
+      { label: "Ba2", frames: 12 }, { label: null, frames: 8 },
+      { label: "Kaf", frames: 12 }, { label: null, frames: 8 },
+    ]);
+    stream.forEach((f) => pipeline.processFrame(f));
+    expect(pipeline.getArabicText()).toBe("\u0628\u062d\u0628\u0643"); // بحبك
+  });
+
+  it("word -> Space -> word produces a real space between them (with idle gaps)", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    const stream = buildStream([
+      { label: "Ba2", frames: 12 }, { label: null, frames: 8 },
+      { label: "Kaf", frames: 12 }, { label: null, frames: 8 },
+      { label: "Space", frames: 12 }, { label: null, frames: 8 },
+      { label: "Alef", frames: 12 }, { label: null, frames: 8 },
+    ]);
+    stream.forEach((f) => pipeline.processFrame(f));
+    expect(pipeline.getArabicText()).toBe("\u0628\u0643 \u0627"); // بك ا
+  });
+
+  it("REGRESSION: word -> Space -> word with ZERO idle gap between signs (direct continuous transitions) still produces a real space — this was the reported bug", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    // Exact literal example from the bug report: ب ح ب ك Space ا ن ا -> بحبك انا
+    // No idle/null frames anywhere between signs — this is what continuous
+    // signing without pausing actually looks like.
+    const stream = buildStream([
+      { label: "Ba2", frames: 12 },
+      { label: "7a2", frames: 12 },
+      { label: "Ba2", frames: 12 },
+      { label: "Kaf", frames: 12 },
+      { label: "Space", frames: 12 },
+      { label: "Alef", frames: 12 },
+      { label: "Noon", frames: 12 },
+      { label: "Alef", frames: 12 },
+      { label: null, frames: 10 }, // natural trailing pause so the last sign commits
+    ]);
+    const commits = stream
+      .map((f) => pipeline.processFrame(f))
+      .filter((r) => r.newTranscriptEntry)
+      .map((r) => r.newTranscriptEntry!.sign);
+
+    expect(commits).toEqual(["Ba2", "7a2", "Ba2", "Kaf", "Space", "Alef", "Noon", "Alef"]);
+    expect(pipeline.getArabicText()).toBe("\u0628\u062d\u0628\u0643 \u0627\u0646\u0627"); // بحبك انا
+  });
+
+  it("Space held/predicted across many raw frames commits exactly once — no duplicate spaces", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    const stream = buildStream([
+      { label: "Alef", frames: 12 }, { label: null, frames: 8 },
+      { label: "Space", frames: 60 }, // sustained well beyond minStableFrames
+      { label: null, frames: 10 },
+    ]);
+    const results = stream.map((f) => pipeline.processFrame(f));
+
+    const rawSpaceFrames = results.filter((r) => r.telemetry.rawLabel === "Space").length;
+    expect(rawSpaceFrames).toBeGreaterThan(30); // plenty of raw per-frame Space predictions
+
+    const spaceCommits = results.filter((r) => r.newTranscriptEntry?.sign === "Space").length;
+    expect(spaceCommits).toBe(1); // but only ONE genuine commit
+    expect(pipeline.getArabicText()).toBe("\u0627 "); // ا + exactly one space
+  });
+
+  it("Space performed twice for real (with a genuine gap) produces two spaces", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    const stream = buildStream([
+      { label: "Alef", frames: 12 }, { label: null, frames: 8 },
+      { label: "Space", frames: 12 }, { label: null, frames: 8 },
+      { label: "Space", frames: 12 }, { label: null, frames: 8 },
+      { label: "Ba2", frames: 12 }, { label: null, frames: 8 },
+    ]);
+    stream.forEach((f) => pipeline.processFrame(f));
+    expect(pipeline.getArabicText()).toBe("\u0627  \u0628"); // ا + two spaces + ب
+  });
+
+  it("Delete correctly removes a trailing space, revealing the previous word", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    const stream = buildStream([
+      { label: "Alef", frames: 12 }, { label: null, frames: 8 },
+      { label: "Space", frames: 12 }, { label: null, frames: 8 },
+      { label: "Delete", frames: 12 }, { label: null, frames: 8 },
+    ]);
+    stream.forEach((f) => pipeline.processFrame(f));
+    expect(pipeline.getArabicText()).toBe("\u0627"); // trailing space removed, ا remains
+  });
+
+  it("multiple words in one continuous session, no manual stops or resets anywhere", () => {
+    const pipeline = new SignRecognitionPipeline(classifier);
+    const stream = buildStream([
+      { label: "Alef", frames: 12 },
+      { label: "Noon", frames: 12 },
+      { label: "Alef", frames: 12 },
+      { label: "Space", frames: 12 },
+      { label: "Ba2", frames: 12 },
+      { label: "Alef", frames: 12 },
+      { label: null, frames: 10 },
+    ]);
+    // One uninterrupted stream: no pipeline.reset(), no clearTranscript(),
+    // no button press simulated anywhere between signs or words.
+    stream.forEach((f) => pipeline.processFrame(f));
+    expect(pipeline.getArabicText()).toBe("\u0627\u0646\u0627 \u0628\u0627"); // انا با
   });
 });

@@ -29,6 +29,11 @@ def main():
     fixture = {
         "Alef": rows_for_class(df, "Alef", 20),
         "Ba2": rows_for_class(df, "Ba2", 20),
+        "Space": rows_for_class(df, "Space", 20),
+        "7a2": rows_for_class(df, "7a2", 20),
+        "Kaf": rows_for_class(df, "Kaf", 20),
+        "Noon": rows_for_class(df, "Noon", 20),
+        "Delete": rows_for_class(df, "Delete", 20),
     }
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, "w") as f:

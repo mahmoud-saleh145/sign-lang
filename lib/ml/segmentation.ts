@@ -60,7 +60,7 @@ export class SignSegmenter {
   private framesSinceLastCommit = Number.POSITIVE_INFINITY;
   private lastConfidence = 0;
 
-  constructor(private readonly config: SegmentationConfig = DEFAULT_SEGMENTATION_CONFIG) {}
+  constructor(private readonly config: SegmentationConfig = DEFAULT_SEGMENTATION_CONFIG) { }
 
   reset(): void {
     this.state = "IDLE";
@@ -121,6 +121,19 @@ export class SignSegmenter {
         if (isCandidate && frame.label === this.candidateLabel) {
           this.gapFrameCount = 0;
           this.lastConfidence = frame.confidence;
+        } else if (isCandidate) {
+          // A DIFFERENT, confidently-recognized sign just appeared. This is
+          // real evidence the current sign ended — commit it immediately
+          // rather than burning maxGapFrames treating it as noise first.
+          // Gap tolerance (below) is reserved for genuine idle/low-
+          // confidence frames (a real pause), not for direct sign-to-sign
+          // transitions, which is how continuous signing actually happens
+          // (spec: no pause required between signs). Previously this branch
+          // fell through to the idle-gap counter, which could consume
+          // enough of the next sign's frames that it never reached
+          // minStableFrames and silently never committed — most visible at
+          // word boundaries (e.g. a "Space" sign right after a letter).
+          return this.commitAndTransition(frame, true);
         } else {
           this.gapFrameCount += 1;
           if (this.gapFrameCount >= this.config.maxGapFrames) {
@@ -137,42 +150,9 @@ export class SignSegmenter {
           this.gapFrameCount = 0;
           this.lastConfidence = frame.confidence;
         } else {
-          // Confirmed end of sign. Commit it, unless this exact label was
-          // just committed too recently (debounce a single long hold).
-          const canCommit =
-            this.candidateLabel !== this.lastCommittedLabel ||
-            this.framesSinceLastCommit >= this.config.minFramesBetweenRepeats;
-
-          const committed = canCommit ? this.candidateLabel : null;
-          const committedConfidence = canCommit ? this.lastConfidence : null;
-
-          if (canCommit && committed !== null) {
-            this.lastCommittedLabel = committed;
-            this.framesSinceLastCommit = 0;
-          }
-
-          const result: SegmentationResult = {
-            state: "COMMITTED",
-            committedLabel: committed,
-            committedConfidence,
-            currentCandidate: this.candidateLabel,
-            currentCandidateConfidence: this.lastConfidence,
-          };
-
-          // Now resolve the state for the *next* frame based on this frame.
-          if (isCandidate) {
-            this.state = "POSSIBLE_SIGN";
-            this.candidateLabel = frame.label;
-            this.stableFrameCount = 1;
-            this.lastConfidence = frame.confidence;
-          } else {
-            this.state = "IDLE";
-            this.candidateLabel = null;
-            this.stableFrameCount = 0;
-          }
-          this.gapFrameCount = 0;
-
-          return result;
+          // Confirmed end of sign (either genuine idle, or a different
+          // confident candidate — either way the current sign is over).
+          return this.commitAndTransition(frame, isCandidate);
         }
         break;
       }
@@ -185,5 +165,50 @@ export class SignSegmenter {
       currentCandidate: this.candidateLabel,
       currentCandidateConfidence: this.lastConfidence,
     };
+  }
+
+  /**
+   * Commits the current candidate (subject to the repeat-debounce check),
+   * then resolves segmentation state for the *next* frame based on
+   * `nextFrame`/`nextFrameIsCandidate` — giving the new candidate (if any)
+   * immediate credit for this frame rather than losing it.
+   */
+  private commitAndTransition(
+    nextFrame: FramePrediction,
+    nextFrameIsCandidate: boolean
+  ): SegmentationResult {
+    const canCommit =
+      this.candidateLabel !== this.lastCommittedLabel ||
+      this.framesSinceLastCommit >= this.config.minFramesBetweenRepeats;
+
+    const committed = canCommit ? this.candidateLabel : null;
+    const committedConfidence = canCommit ? this.lastConfidence : null;
+
+    if (canCommit && committed !== null) {
+      this.lastCommittedLabel = committed;
+      this.framesSinceLastCommit = 0;
+    }
+
+    const result: SegmentationResult = {
+      state: "COMMITTED",
+      committedLabel: committed,
+      committedConfidence,
+      currentCandidate: this.candidateLabel,
+      currentCandidateConfidence: this.lastConfidence,
+    };
+
+    if (nextFrameIsCandidate) {
+      this.state = "POSSIBLE_SIGN";
+      this.candidateLabel = nextFrame.label;
+      this.stableFrameCount = 1;
+      this.lastConfidence = nextFrame.confidence;
+    } else {
+      this.state = "IDLE";
+      this.candidateLabel = null;
+      this.stableFrameCount = 0;
+    }
+    this.gapFrameCount = 0;
+
+    return result;
   }
 }
