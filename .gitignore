@@ -28,7 +28,6 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
 .env*
@@ -45,3 +44,11 @@ next-env.d.ts
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# KArSL raw video dataset and its processed landmark output -- local-only,
+# never committed (raw video especially can be gigabytes). The only output
+# artifact that IS meant to be committed is public/models/sign-vocabulary/
+# dedicated-signs.json, produced by ml/training/import_karsl.py.
+/KArSL/
+/processed-karsl/
+/ml/training/.cache/
