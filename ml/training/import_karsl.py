@@ -3,22 +3,34 @@ Imports processed KArSL landmark data into the app's real dedicated-sign
 registry format.
 
 ============================================================================
+SIGN ID MATCHING: zero-padded folders vs. plain-integer labels
+============================================================================
+Real KArSL video folders are zero-padded (e.g. "0001", "0042", "0502"), but
+the real labels spreadsheet (KARSL-502_Labels.xlsx) uses plain integer
+SignID values ("1", "42", "502") with no padding at all. These MUST be
+matched against each other correctly, or every sign silently fails to find
+its label and gets skipped.
+
+canonicalize_sign_id() below strips leading zeros from any purely-numeric
+ID string ("0001" -> "1"), so both representations compare equal. This is
+applied consistently everywhere a sign ID from a folder name is compared
+against a sign ID from the labels file. Non-numeric IDs (for a differently-
+structured dataset) are left unchanged rather than assumed to be numeric.
+
+The ORIGINAL, on-disk folder name (e.g. "0001") is still preserved in each
+output entry's `sourceSignId` field for traceability back to the source
+video -- canonicalization is used only for matching, never for storage.
+
+============================================================================
 TWO SUPPORTED INPUT FORMATS
 ============================================================================
 1. PREFERRED, REAL: output of ml/training/extract_karsl_skeletons.py --
    per-sign directories containing per-video JSON files shaped like
    {"signId": ..., "sourceVideo": ..., "frames": [{"frameIndex":...,
-   "handDetected":..., "landmarks": [...]|null}, ...]}. This is our own
-   controlled pipeline's real, known output -- run that script against real
-   KArSL video first (see its own docstring), then run this one against its
-   output directory.
+   "handDetected":..., "landmarks": [...]|null}, ...]}.
 
 2. FALLBACK, UNVERIFIED: a directory containing one skeleton/joint file per
-   FRAME (not per video). This was this importer's original assumption,
-   written from KArSL's published documentation before any real file
-   format was known. It is kept only as a fallback for a differently-
-   structured dataset; prefer format 1 whenever you have real KArSL videos,
-   since extract_karsl_skeletons.py's output format is not a guess.
+   FRAME (not per video), for a differently-structured dataset.
 
 ============================================================================
 HONESTY NOTE
@@ -28,27 +40,17 @@ format, it fails loudly with a clear message about what it found instead
 of silently producing wrong or fabricated data.
 
 USAGE:
-    # From real extracted video landmarks (preferred):
     python3 ml/training/import_karsl.py \
         --input processed-karsl \
-        --labels /path/to/karsl/labels.xlsx  \
-        --output public/models/sign-vocabulary/dedicated-signs.json
-
-    # From a differently-structured per-frame-file dataset (fallback):
-    python3 ml/training/import_karsl.py \
-        --input /path/to/other/dataset \
-        --labels /path/to/labels.xlsx \
+        --labels /path/to/KARSL-502_Labels.xlsx \
         --output public/models/sign-vocabulary/dedicated-signs.json
 
 WHAT IT DOES NOT DO:
-    - It does not download or extract anything from video -- that's
-      extract_karsl_skeletons.py's job.
-    - It does not fabricate any sign it can't find real data for -- signs
-      with unparseable or missing data are skipped and reported, not guessed.
+    - It does not download or extract anything from video.
+    - It does not fabricate any sign it can't find real data for.
     - It does not touch public/models/arsl-31/ (the alphabet model) at all.
     - If a sign has multiple videos, only the first (alphabetically) is
-      used -- other repetitions are reported as available but unused, never
-      silently merged or averaged together.
+      used -- other repetitions are reported as available but unused.
 """
 from __future__ import annotations
 
@@ -62,7 +64,7 @@ from typing import Optional
 try:
     import pandas as pd
 except ImportError:
-    pd = None  # only needed if --labels is an .xlsx/.csv file
+    pd = None
 
 
 DATASET_NAME = "KArSL-502"
@@ -78,10 +80,21 @@ class ImportStats:
     frames_total: int = 0
 
 
+def canonicalize_sign_id(raw_id: str) -> str:
+    """Canonical form for matching a KArSL sign ID across representations.
+
+    "0001" and "1" both canonicalize to "1"; "0" stays "0"; "0502" -> "502".
+    Purely numeric IDs have leading zeros stripped. Non-numeric IDs (a
+    differently-structured dataset might use them) are returned unchanged --
+    we don't assume every dataset's IDs are numeric.
+    """
+    stripped = raw_id.strip()
+    if stripped.isdigit():
+        return str(int(stripped))
+    return stripped
+
+
 def find_processed_video_jsons(sign_dir: str) -> list[str]:
-    """Finds per-video JSON files directly under a sign's directory (not
-    recursive -- extract_karsl_skeletons.py writes exactly one JSON per
-    video at this level)."""
     if not os.path.isdir(sign_dir):
         return []
     return sorted(
@@ -90,13 +103,6 @@ def find_processed_video_jsons(sign_dir: str) -> list[str]:
 
 
 def load_processed_video_json(path: str) -> Optional[list[list[dict]]]:
-    """Loads one real processed-karsl per-video JSON (see
-    extract_karsl_skeletons.py's docstring for the exact shape) and returns
-    its frame landmark sequence, with frames that had no detected hand
-    DROPPED (never fabricated) -- the number dropped is printed so it's
-    never silently lost. Returns None if `path` isn't actually in this
-    format at all (so the caller can fall back to the old per-frame-file
-    assumption instead)."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -129,10 +135,6 @@ def load_processed_video_json(path: str) -> Optional[list[list[dict]]]:
 
 
 def find_skeleton_files(sign_dir: str) -> list[str]:
-    """Looks for per-frame skeleton/joint files under a sign's directory.
-    KArSL's documentation describes per-frame joint-position files; the
-    exact extension/naming has not been verified against real files, so
-    this checks a few plausible patterns and reports what it actually finds."""
     candidates = []
     for root, _dirs, files in os.walk(sign_dir):
         for fname in files:
@@ -142,14 +144,6 @@ def find_skeleton_files(sign_dir: str) -> list[str]:
 
 
 def parse_skeleton_file(path: str) -> Optional[list[dict]]:
-    """Parses one skeleton/joint file into a list of {x, y, z} points.
-    Expects either:
-      - a JSON array of [x, y, z] triples or {x,y,z} objects, OR
-      - a whitespace/comma-delimited text file with one point per line
-        ("x y z" or "x,y,z").
-    Returns None (not a fabricated guess) if the format doesn't match either
-    of these -- caller is responsible for reporting the skip.
-    """
     try:
         if path.lower().endswith(".json"):
             with open(path) as f:
@@ -176,9 +170,10 @@ def parse_skeleton_file(path: str) -> Optional[list[dict]]:
 
 
 def load_labels(labels_path: Optional[str]) -> dict[str, str]:
-    """Maps sign ID -> Arabic word/meaning. Returns {} if no labels file is
-    given or it can't be read -- signs without a label are skipped later,
-    never given a fabricated placeholder label."""
+    """Maps sign ID (exactly as written in the labels file, e.g. "1") ->
+    Arabic word/meaning. Keys are NOT canonicalized here -- canonicalization
+    happens at lookup time in main(), via a canonical index built from this
+    dict (see build_canonical_label_index)."""
     if not labels_path or not os.path.exists(labels_path):
         return {}
     if pd is None:
@@ -190,19 +185,41 @@ def load_labels(labels_path: Optional[str]) -> dict[str, str]:
             df = pd.read_excel(labels_path, dtype=str)
         else:
             df = pd.read_csv(labels_path, dtype=str)
-    except Exception as e:  # noqa: BLE001 -- report and continue with no labels
+    except Exception as e:  # noqa: BLE001
         print(f"WARNING: could not read labels file {labels_path}: {e}")
         return {}
 
-    # KArSL's public label sheet format hasn't been verified; try the most
-    # plausible column names and report what was actually found otherwise.
     id_col = next((c for c in df.columns if "id" in c.lower() or "sign" in c.lower()), None)
-    label_col = next((c for c in df.columns if "arabic" in c.lower() or "meaning" in c.lower() or "label" in c.lower()), None)
+    label_col = next(
+        (c for c in df.columns if "arabic" in c.lower() or "meaning" in c.lower() or "label" in c.lower()),
+        None,
+    )
     if id_col is None or label_col is None:
         print(f"WARNING: could not identify ID/label columns in {labels_path}. Found columns: {list(df.columns)}")
         return {}
 
     return {str(row[id_col]): str(row[label_col]) for _, row in df.iterrows()}
+
+
+def build_canonical_label_index(labels: dict[str, str]) -> dict[str, str]:
+    """Builds a {canonical_id: label} index from the raw labels dict,
+    detecting (and warning about, never silently resolving) any collision
+    where two different raw IDs canonicalize to the same value -- that
+    would be a genuine data ambiguity, not something to guess through."""
+    index: dict[str, str] = {}
+    seen_raw_id_for_canonical: dict[str, str] = {}
+    for raw_id, label in labels.items():
+        canonical = canonicalize_sign_id(raw_id)
+        if canonical in index and seen_raw_id_for_canonical[canonical] != raw_id:
+            print(
+                f"WARNING: sign IDs {seen_raw_id_for_canonical[canonical]!r} and {raw_id!r} "
+                f"both canonicalize to {canonical!r} -- keeping the first, skipping the collision "
+                f"rather than silently overwriting."
+            )
+            continue
+        index[canonical] = label
+        seen_raw_id_for_canonical[canonical] = raw_id
+    return index
 
 
 def main() -> int:
@@ -222,6 +239,7 @@ def main() -> int:
         return 1
 
     labels = load_labels(args.labels)
+    canonical_labels = build_canonical_label_index(labels)
     if not labels:
         print(
             "WARNING: no labels loaded. Every imported sign needs a real Arabic "
@@ -243,14 +261,15 @@ def main() -> int:
         return 1
 
     for sign_id in sign_dirs:
-        label = labels.get(sign_id)
+        # sign_id here is the ORIGINAL, on-disk folder name (e.g. "0001").
+        # Canonicalize only for the label lookup -- never for storage.
+        label = canonical_labels.get(canonicalize_sign_id(sign_id))
         if not label:
-            stats.signs_skipped.append(f"{sign_id} (no label found)")
+            stats.signs_skipped.append(f"{sign_id} (no label found for canonical ID {canonicalize_sign_id(sign_id)!r})")
             continue
 
         sign_dir = os.path.join(args.input, sign_id)
 
-        # 1. Preferred: real processed-karsl output (one JSON per video).
         video_jsons = find_processed_video_jsons(sign_dir)
         frames: list[list[dict]] = []
         used_format = None
@@ -269,7 +288,6 @@ def main() -> int:
                         )
                     break
 
-        # 2. Fallback: old per-frame-file assumption, for a differently-structured dataset.
         if not frames:
             skeleton_files = find_skeleton_files(sign_dir)
             if not skeleton_files:
@@ -299,6 +317,7 @@ def main() -> int:
                     "license": DATASET_LICENSE,
                     "version": args.version,
                 },
+                "sourceSignId": sign_id,  # original, zero-padded folder name preserved
             }
         )
         stats.signs_imported += 1

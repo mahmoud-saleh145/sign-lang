@@ -56,6 +56,15 @@ export function toArabicChar(label: string): string | null {
   return ARABIC_LETTER_MAP[label] ?? null;
 }
 
+const CHAR_TO_LABEL: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(ARABIC_LETTER_MAP).map(([label, char]) => [char, label])
+);
+
+/** Reverse lookup: Arabic character -> the model's class name (e.g. "ب" -> "Ba2"). Null if unsupported. */
+export function fromArabicChar(char: string): string | null {
+  return CHAR_TO_LABEL[char] ?? null;
+}
+
 /** Short symbol used to represent a control sign in debug/telemetry UI. */
 export function controlSignSymbol(label: ControlSign): string {
   switch (label) {

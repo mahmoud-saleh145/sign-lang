@@ -3,8 +3,9 @@
 import { useState } from "react";
 import CameraView from "@/components/camera/CameraView";
 import SpeechToText from "@/components/speech/SpeechToText";
+import VoiceToSign from "@/components/translator/VoiceToSign";
 
-type Mode = "sign" | "speech";
+type Mode = "sign" | "speech" | "voice-to-sign";
 
 export default function TranslatorPage() {
   const [mode, setMode] = useState<Mode>("sign");
@@ -18,13 +19,16 @@ export default function TranslatorPage() {
       <div
         role="tablist"
         aria-label="Translation direction"
-        className="flex rounded-full bg-[var(--color-surface)] p-1 border border-white/10"
+        className="flex flex-wrap rounded-full bg-[var(--color-surface)] p-1 border border-white/10"
       >
         <ModeTab label={"Sign \u2192 Text"} active={mode === "sign"} onClick={() => setMode("sign")} />
         <ModeTab label={"Speech \u2192 Text"} active={mode === "speech"} onClick={() => setMode("speech")} />
+        <ModeTab label={"Voice \u2192 Sign"} active={mode === "voice-to-sign"} onClick={() => setMode("voice-to-sign")} />
       </div>
 
-      {mode === "sign" ? <CameraView /> : <SpeechToText />}
+      {mode === "sign" && <CameraView />}
+      {mode === "speech" && <SpeechToText />}
+      {mode === "voice-to-sign" && <VoiceToSign />}
     </main>
   );
 }
@@ -43,9 +47,8 @@ function ModeTab({
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      className={`flex-1 py-3 rounded-full font-medium text-sm transition-colors ${
-        active ? "bg-[var(--color-accent-active)] text-[#0B1220]" : "text-[var(--color-text-dim)]"
-      }`}
+      className={`flex-1 min-w-[30%] py-3 rounded-full font-medium text-sm transition-colors ${active ? "bg-[var(--color-accent-active)] text-[#0B1220]" : "text-[var(--color-text-dim)]"
+        }`}
     >
       {label}
     </button>

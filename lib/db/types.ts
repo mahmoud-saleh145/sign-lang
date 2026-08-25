@@ -44,6 +44,23 @@ export interface TranslationSessionDocument {
 }
 
 /**
+ * Metadata for a dedicated (word/phrase) sign dataset once real data is
+ * integrated (see lib/sign-language/signRegistry.ts, currently empty).
+ * Mirrors the DatasetProvenance shape used in that registry.
+ */
+export interface SignVocabularyDocument {
+  _id?: ObjectId;
+  datasetName: string;
+  source: string;
+  license: string;
+  version: string;
+  classes: string[];
+  sampleCount: number;
+  signerIndependent: boolean;
+  dataType: "landmarks" | "video" | "image";
+  addedAt: Date;
+}
+/**
  * A collected training sample from the dataset collection tool (spec
  * sections 12/13). Stores landmark sequences + metadata only — never raw
  * video, per spec section 12 ("Do NOT save raw video unless necessary").

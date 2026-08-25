@@ -5,6 +5,7 @@ import type {
   ModelMetadataDocument,
   TranslationSessionDocument,
   CollectedSampleDocument,
+  SignVocabularyDocument,
 } from "./types";
 
 export async function languagesCollection() {
@@ -25,4 +26,8 @@ export async function translationSessionsCollection() {
 
 export async function collectedSamplesCollection() {
   return (await getDb()).collection<CollectedSampleDocument>("collectedSamples");
+}
+
+export async function signVocabularyCollection() {
+  return (await getDb()).collection<SignVocabularyDocument>("signVocabulary");
 }
