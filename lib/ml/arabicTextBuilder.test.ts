@@ -6,15 +6,15 @@ import { ArabicTextBuilder } from "./arabicTextBuilder";
 
 describe("ARABIC_LETTER_MAP", () => {
   it("maps every English model label to the correct Arabic character (spot checks against dataset docs)", () => {
-    expect(toArabicChar("Alef")).toBe("\u0627"); // ا
-    expect(toArabicChar("Ba2")).toBe("\u0628"); // ب
-    expect(toArabicChar("Ta2")).toBe("\u062a"); // ت
-    expect(toArabicChar("Tha2")).toBe("\u062b"); // ث
-    expect(toArabicChar("7a2")).toBe("\u062d"); // ح
-    expect(toArabicChar("Chin")).toBe("\u0634"); // ش
-    expect(toArabicChar("9af")).toBe("\u0642"); // ق
-    expect(toArabicChar("Ha2")).toBe("\u0647"); // ه
-    expect(toArabicChar("Ya2")).toBe("\u064a"); // ي
+    expect(toArabicChar("Alef")).toBe("\u0627");
+    expect(toArabicChar("Ba2")).toBe("\u0628");
+    expect(toArabicChar("Ta2")).toBe("\u062a");
+    expect(toArabicChar("Tha2")).toBe("\u062b");
+    expect(toArabicChar("7a2")).toBe("\u062d");
+    expect(toArabicChar("Chin")).toBe("\u0634");
+    expect(toArabicChar("9af")).toBe("\u0642");
+    expect(toArabicChar("Ha2")).toBe("\u0647");
+    expect(toArabicChar("Ya2")).toBe("\u064a");
   });
 
   it("covers exactly the 28 letter classes from the model's metadata, no more, no less", () => {
@@ -32,10 +32,10 @@ describe("ARABIC_LETTER_MAP", () => {
 
   it("every mapped value is a single, distinct Arabic character", () => {
     const values = Object.values(ARABIC_LETTER_MAP);
-    expect(new Set(values).size).toBe(values.length); // no duplicates
+    expect(new Set(values).size).toBe(values.length);
     for (const v of values) {
       expect(v.length).toBe(1);
-      expect(v.codePointAt(0)).toBeGreaterThanOrEqual(0x0600); // Arabic block
+      expect(v.codePointAt(0)).toBeGreaterThanOrEqual(0x0600);
       expect(v.codePointAt(0)).toBeLessThanOrEqual(0x06ff);
     }
   });
@@ -52,12 +52,10 @@ describe("ARABIC_LETTER_MAP", () => {
 describe("ArabicTextBuilder", () => {
   it("accumulates letters into a word purely by concatenation (no dictionary)", () => {
     const builder = new ArabicTextBuilder();
-    // ب -> ح -> ب -> ك should genuinely concatenate to بحبك, not look up a
-    // word table. Prove it by checking each intermediate state too.
-    expect(builder.applyCommittedLabel("Ba2").text).toBe("\u0628"); // ب
-    expect(builder.applyCommittedLabel("7a2").text).toBe("\u0628\u062d"); // بح
-    expect(builder.applyCommittedLabel("Ba2").text).toBe("\u0628\u062d\u0628"); // بحب
-    expect(builder.applyCommittedLabel("Kaf").text).toBe("\u0628\u062d\u0628\u0643"); // بحبك
+    expect(builder.applyCommittedLabel("Ba2").text).toBe("\u0628");
+    expect(builder.applyCommittedLabel("7a2").text).toBe("\u0628\u062d");
+    expect(builder.applyCommittedLabel("Ba2").text).toBe("\u0628\u062d\u0628");
+    expect(builder.applyCommittedLabel("Kaf").text).toBe("\u0628\u062d\u0628\u0643");
   });
 
   it("Space inserts a literal space", () => {
@@ -74,7 +72,7 @@ describe("ArabicTextBuilder", () => {
     builder.applyCommittedLabel("Ba2");
     const result = builder.applyCommittedLabel("Delete");
     expect(result.action).toBe("delete");
-    expect(result.text).toBe("\u0627"); // ب removed, ا remains
+    expect(result.text).toBe("\u0627");
   });
 
   it("Delete on empty text is a safe no-op", () => {
@@ -88,7 +86,7 @@ describe("ArabicTextBuilder", () => {
     builder.applyCommittedLabel("Alef");
     builder.applyCommittedLabel("Space");
     const result = builder.applyCommittedLabel("Delete");
-    expect(result.text).toBe("\u0627"); // trailing space removed
+    expect(result.text).toBe("\u0627");
   });
 
   it("Finish does not modify the text (no punctuation semantics defined for V1)", () => {
@@ -104,19 +102,15 @@ describe("ArabicTextBuilder", () => {
     const builder = new ArabicTextBuilder();
     builder.applyCommittedLabel("Lam");
     const result = builder.applyCommittedLabel("Lam");
-    expect(result.text).toBe("\u0644\u0644"); // لل
+    expect(result.text).toBe("\u0644\u0644");
   });
 
   it("builds multiple words separated by Space, matching the spec's worked example", () => {
     const builder = new ArabicTextBuilder();
-    // أ -> ن -> ا -> Space -> ب -> ح -> ب -> ك  should give "انا بحبك"
-    // Note: dataset has "Alef" (ا) only, no separate hamza-on-alef class,
-    // so we use Alef for all three "ا"/"أ"-looking letters here, matching
-    // what the model can actually output.
     for (const label of ["Alef", "Noon", "Alef", "Space", "Ba2", "7a2", "Ba2", "Kaf"]) {
       builder.applyCommittedLabel(label);
     }
-    expect(builder.getText()).toBe("\u0627\u0646\u0627 \u0628\u062d\u0628\u0643"); // "انا بحبك"
+    expect(builder.getText()).toBe("\u0627\u0646\u0627 \u0628\u062d\u0628\u0643");
   });
 
   it("reset() clears accumulated text", () => {
@@ -132,5 +126,30 @@ describe("ArabicTextBuilder", () => {
     const result = builder.applyCommittedLabel("NotARealClass");
     expect(result.action).toBe("unknown");
     expect(result.text).toBe("\u0627");
+  });
+
+  it("appendLiteralText appends a recognized KArSL phrase verbatim, with no auto-added spacing", () => {
+    const builder = new ArabicTextBuilder();
+    builder.applyCommittedLabel("Alef");
+    const result = builder.appendLiteralText("\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629");
+    expect(result.action).toBe("append");
+    expect(result.text).toBe("\u0627\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629");
+  });
+
+  it("appendLiteralText composes correctly with Space and letters (existing behavior unaffected)", () => {
+    const builder = new ArabicTextBuilder();
+    builder.applyCommittedLabel("Alef");
+    builder.applyCommittedLabel("Space");
+    builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    builder.applyCommittedLabel("Space");
+    builder.applyCommittedLabel("Ba2");
+    expect(builder.getText()).toBe("\u0627 \u0645\u0631\u062d\u0628\u0627 \u0628");
+  });
+
+  it("Delete after appendLiteralText removes only the last character, not the whole phrase", () => {
+    const builder = new ArabicTextBuilder();
+    builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    const result = builder.applyCommittedLabel("Delete");
+    expect(result.text).toBe("\u0645\u0631\u062d\u0628"); // last character removed, not the whole phrase
   });
 });

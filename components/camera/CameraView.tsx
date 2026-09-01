@@ -10,6 +10,8 @@ import TranscriptPanel from "@/components/translator/TranscriptPanel";
 import DebugTelemetryPanel from "@/components/translator/DebugTelemetryPanel";
 import StabilityBar from "@/components/translator/StabilityBar";
 import { toArabicChar, isControlSign, controlSignSymbol, type ControlSign } from "@/lib/ml/arabicLabels";
+import { preloadDynamicSignRegistry } from "@/lib/ml/dynamicSignRecognizer";
+
 
 function candidateDisplayLabel(label: string): string {
   if (isControlSign(label)) return controlSignSymbol(label as ControlSign);
@@ -53,7 +55,7 @@ export default function CameraView() {
 
   useEffect(() => stopEverything, [stopEverything]);
 
-  const loopRef = useRef<() => void>(() => {});
+  const loopRef = useRef<() => void>(() => { });
   useEffect(() => {
     loopRef.current = () => {
       const video = videoRef.current;
@@ -68,6 +70,9 @@ export default function CameraView() {
         setArabicText(tick.telemetry.arabicText);
         if (tick.newTranscriptEntry) {
           setTranscript((prev) => [...prev, tick.newTranscriptEntry!]);
+        }
+        if (tick.newDynamicSignEntry) {
+          setTranscript((prev) => [...prev, tick.newDynamicSignEntry!]);
         }
       }
       rafRef.current = requestAnimationFrame(() => loopRef.current());
@@ -94,6 +99,11 @@ export default function CameraView() {
         HandLandmarkerService.create({ numHands: 1 }),
         fetch("/models/arsl-31/metadata.json"),
       ]);
+      // Dynamic KArSL recognition is additive: if this fails (e.g. no
+      // dedicated-signs.json yet), letter recognition must still work.
+      preloadDynamicSignRegistry().catch((err) => {
+        console.warn("Dynamic KArSL sign recognition unavailable:", err);
+      });
       if (!metaRes.ok) throw new Error("Failed to load model metadata.");
       const meta = (await metaRes.json()) as ModelMetadata;
       const classifier = await ArSLClassifier.loadFromUrl("/models/arsl-31/weights.json");

@@ -24,6 +24,9 @@ export default function DebugTelemetryPanel({
       <Row label="committed this frame" value={telemetry?.committedThisFrame ?? "null"} />
       <Row label="transcript length" value={String(telemetry?.transcriptLength ?? 0)} />
       <Row label="arabic text" value={telemetry?.arabicText || "(empty)"} />
+      <Row label="dynamic gesture state" value={telemetry?.dynamicGestureState ?? "-"} />
+      <Row label="dynamic gesture buffered frames" value={String(telemetry?.dynamicGestureFrameCount ?? 0)} />
+      <Row label="dynamic match this frame" value={telemetry?.dynamicMatchThisFrame ?? "null"} />
       <Row label="confidence threshold" value={metadata ? String(metadata.confidenceThreshold) : "-"} />
       <Row
         label="stability window"

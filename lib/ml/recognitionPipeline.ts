@@ -6,12 +6,9 @@ import { SignSegmenter, DEFAULT_SEGMENTATION_CONFIG } from "./segmentation";
 import type { SegmentationConfig } from "./segmentation";
 import { ArabicTextBuilder } from "./arabicTextBuilder";
 import { toArabicChar, isControlSign, controlSignSymbol, type ControlSign } from "./arabicLabels";
+import { DEFAULT_GESTURE_BUFFER_CONFIG, DynamicGestureBuffer, GestureBufferConfig } from "./dynamicGestureBuffer";
+import { recognizeDynamicSignSync } from "./dynamicSignRecognizer";
 
-/**
- * Debug telemetry for one processed frame (spec item 8: raw prediction,
- * confidence, segmentation state, committed signs). Intended for a
- * developer-facing overlay, not the end-user UI.
- */
 export interface FrameTelemetry {
   timestampMs: number;
   handDetected: boolean;
@@ -21,56 +18,54 @@ export interface FrameTelemetry {
   currentCandidate: string | null;
   committedThisFrame: string | null;
   transcriptLength: number;
-  /** Full accumulated Arabic text after this frame (see ArabicTextBuilder). */
   arabicText: string;
+  /** State of the SEPARATE dynamic-gesture buffer (lib/ml/dynamicGestureBuffer.ts).
+   * Independent of segmentationState -- see that module's docstring for why
+   * these are deliberately two different state machines. */
+  dynamicGestureState: string;
+  /** Number of frames currently buffered for dynamic-sign matching. */
+  dynamicGestureFrameCount: number;
+  /** Non-null exactly on the frame a KArSL dedicated sign was recognized this frame. */
+  dynamicMatchThisFrame: string | null;
 }
 
 export interface PipelineTick {
   telemetry: FrameTelemetry;
+  /** A committed static letter/control sign this frame, if any (unchanged behavior). */
   newTranscriptEntry: TranscriptEntry | null;
+  /** A recognized KArSL dedicated word/phrase this frame, if any. Separate
+   * from newTranscriptEntry so a letter commit and a dynamic-sign commit
+   * can never silently overwrite each other if they happened to land on
+   * the same frame. */
+  newDynamicSignEntry: TranscriptEntry | null;
 }
 
 let entryCounter = 0;
 
-/** Display form for a committed label: the Arabic letter, or a symbol for control signs. */
 function displayLabelFor(label: string): string {
   if (isControlSign(label)) return controlSignSymbol(label as ControlSign);
-  return toArabicChar(label) ?? label; // fall back to raw label if somehow unmapped
+  return toArabicChar(label) ?? label;
 }
 
-/**
- * Stateful per-session pipeline. One instance per active camera session.
- *
- * IMPORTANT — no "nothing"/idle class exists in the ArSL-31 dataset (verify
- * yourself: public/models/arsl-31/metadata.json "classes" has 31 entries,
- * all real signs/control signs, none meaning "no sign"). So idle detection
- * is NOT model-based here — it's driven by MediaPipe hand-presence: no
- * detected hand this frame == idle, fed to the segmenter as
- * {label: null, confidence: 0}, exactly like a below-threshold prediction.
- *
- * TEXT OUTPUT: committed labels (English model class names, e.g. "Ba2")
- * are converted to Arabic characters only at this layer, via
- * ArabicTextBuilder — the model's own class names never change. There is
- * no dictionary here: words form purely by concatenating committed
- * characters in the order they were signed.
- */
 export class SignRecognitionPipeline {
   private readonly segmenter: SignSegmenter;
   private readonly textBuilder = new ArabicTextBuilder();
+  private readonly gestureBuffer: DynamicGestureBuffer;
   private transcript: TranscriptEntry[] = [];
 
   constructor(
     private readonly classifier: ArSLClassifier,
-    segmentationConfig: SegmentationConfig = DEFAULT_SEGMENTATION_CONFIG
+    segmentationConfig: SegmentationConfig = DEFAULT_SEGMENTATION_CONFIG,
+    gestureBufferConfig: GestureBufferConfig = DEFAULT_GESTURE_BUFFER_CONFIG
   ) {
     this.segmenter = new SignSegmenter(segmentationConfig);
+    this.gestureBuffer = new DynamicGestureBuffer(gestureBufferConfig);
   }
 
   getTranscript(): readonly TranscriptEntry[] {
     return this.transcript;
   }
 
-  /** The accumulated, user-facing Arabic text built from committed signs so far. */
   getArabicText(): string {
     return this.textBuilder.getText();
   }
@@ -80,13 +75,13 @@ export class SignRecognitionPipeline {
     this.textBuilder.reset();
   }
 
-  /** Reset segmentation state (e.g. user pressed pause/resume) without clearing transcript. */
   resetSegmentation(): void {
     this.segmenter.reset();
+    this.gestureBuffer.reset();
   }
 
   processFrame(detection: FrameDetection): PipelineTick {
-    const hand = detection.hands[0]; // numHands=1; see HandLandmarkerServiceOptions
+    const hand = detection.hands[0];
 
     let rawLabel: string | null = null;
     let rawConfidence = 0;
@@ -98,22 +93,42 @@ export class SignRecognitionPipeline {
       rawConfidence = prediction.confidence;
     }
 
+    // --- Static letter/control path: UNCHANGED from before this feature. ---
     const segResult = this.segmenter.step({ label: rawLabel, confidence: rawConfidence });
 
     let newTranscriptEntry: TranscriptEntry | null = null;
     if (segResult.committedLabel !== null && segResult.committedConfidence !== null) {
-      // Exactly one call per genuine commit — never per raw frame — is what
-      // guarantees raw per-frame predictions can't spam the Arabic text.
       this.textBuilder.applyCommittedLabel(segResult.committedLabel);
 
       newTranscriptEntry = {
         id: `entry-${entryCounter++}`,
-        sign: segResult.committedLabel, // unchanged internal model class name
-        displayLabel: displayLabelFor(segResult.committedLabel), // Arabic char or control symbol
+        sign: segResult.committedLabel,
+        displayLabel: displayLabelFor(segResult.committedLabel),
         confidence: segResult.committedConfidence,
         committedAtMs: detection.timestampMs,
       };
       this.transcript = [...this.transcript, newTranscriptEntry];
+    }
+
+    // --- Dynamic KArSL path: runs independently, alongside the static path. ---
+    const gestureResult = this.gestureBuffer.step(hand ? hand.landmarks : null);
+
+    let newDynamicSignEntry: TranscriptEntry | null = null;
+    let dynamicMatchThisFrame: string | null = null;
+    if (gestureResult.completedGesture) {
+      const match = recognizeDynamicSignSync(gestureResult.completedGesture);
+      if (match) {
+        this.textBuilder.appendLiteralText(match.entry.text);
+        dynamicMatchThisFrame = match.entry.text;
+        newDynamicSignEntry = {
+          id: `entry-${entryCounter++}`,
+          sign: match.entry.sourceSignId ? `KArSL:${match.entry.sourceSignId}` : `KArSL:${match.entry.text}`,
+          displayLabel: match.entry.text,
+          confidence: Math.max(0, 1 - match.distance),
+          committedAtMs: detection.timestampMs,
+        };
+        this.transcript = [...this.transcript, newDynamicSignEntry];
+      }
     }
 
     const telemetry: FrameTelemetry = {
@@ -126,8 +141,11 @@ export class SignRecognitionPipeline {
       committedThisFrame: segResult.committedLabel,
       transcriptLength: this.transcript.length,
       arabicText: this.textBuilder.getText(),
+      dynamicGestureState: gestureResult.state,
+      dynamicGestureFrameCount: gestureResult.bufferedFrameCount,
+      dynamicMatchThisFrame,
     };
 
-    return { telemetry, newTranscriptEntry };
+    return { telemetry, newTranscriptEntry, newDynamicSignEntry };
   }
 }
