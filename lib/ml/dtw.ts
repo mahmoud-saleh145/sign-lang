@@ -18,13 +18,37 @@ export interface DtwResult {
     pathLength: number;
 }
 
-function euclideanDistance(a: number[], b: number[]): number {
-    let sum = 0;
-    for (let i = 0; i < a.length; i++) {
-        const d = a[i] - b[i];
-        sum += d * d;
+/**
+ * Computes DTW distance between two sequences of numeric vectors.
+ * Both sequences must contain vectors of the same dimensionality (not
+ * necessarily the same length as each other).
+ */
+/**
+ * SCRATCH BUFFERS, reused across calls.
+ *
+ * This used to allocate `cost` and `pathLen` as fresh arrays-of-arrays on
+ * every call: 2 + 2*(n+1) array objects each time. Measured on the real
+ * corpus, one held-out query runs 2,002 DTW comparisons and allocates 128,128
+ * arrays; at 2,000 prototypes that is ~360,000 per query, and a 994-case
+ * benchmark pass allocates hundreds of millions. The arithmetic was never the
+ * problem -- the garbage was. Once the heap is under pressure V8 spends its
+ * time collecting rather than computing, which is how the same benchmark on
+ * the same data went from 45 minutes to 15 hours.
+ *
+ * Flat typed arrays, indexed i*(m+1)+j, grown on demand and never shrunk. DTW
+ * here is synchronous and never re-entrant -- one call completes before the
+ * next begins -- so a single shared pair is safe. Float64Array holds exactly
+ * the doubles JS numbers hold, so every value and every comparison is
+ * identical to the previous implementation.
+ */
+let costBuffer = new Float64Array(0);
+let pathBuffer = new Int32Array(0);
+
+function ensureCapacity(cells: number): void {
+    if (costBuffer.length < cells) {
+        costBuffer = new Float64Array(cells);
+        pathBuffer = new Int32Array(cells);
     }
-    return Math.sqrt(sum);
 }
 
 /**
@@ -40,36 +64,57 @@ export function dtwDistance(seqA: number[][], seqB: number[][]): DtwResult {
         throw new Error("dtwDistance: both sequences must be non-empty");
     }
 
-    // cost[i][j] = min accumulated cost aligning seqA[0..i) with seqB[0..j)
-    const cost: number[][] = Array.from({ length: n + 1 }, () =>
-        new Array<number>(m + 1).fill(Infinity)
-    );
-    // pathLen[i][j] tracks how many steps the optimal path to (i,j) took, so
-    // we can report a length-normalized cost at the end.
-    const pathLen: number[][] = Array.from({ length: n + 1 }, () =>
-        new Array<number>(m + 1).fill(0)
-    );
-    cost[0][0] = 0;
+    const width = m + 1;
+    ensureCapacity((n + 1) * width);
+    const cost = costBuffer;
+    const pathLen = pathBuffer;
+
+    // Only the cells this call uses are initialised, so a larger buffer left
+    // over from an earlier call cannot leak stale values into this one.
+    for (let j = 0; j <= m; j++) {
+        cost[j] = Infinity;
+        pathLen[j] = 0;
+    }
+    cost[0] = 0;
 
     for (let i = 1; i <= n; i++) {
+        const row = i * width;
+        const prevRow = row - width;
+        cost[row] = Infinity;
+        pathLen[row] = 0;
+        const va = seqA[i - 1];
+        const dim = va.length;
         for (let j = 1; j <= m; j++) {
-            const d = euclideanDistance(seqA[i - 1], seqB[j - 1]);
-            const candidates: Array<[number, number]> = [
-                [cost[i - 1][j], pathLen[i - 1][j]], // insertion
-                [cost[i][j - 1], pathLen[i][j - 1]], // deletion
-                [cost[i - 1][j - 1], pathLen[i - 1][j - 1]], // match
-            ];
-            let best = candidates[0];
-            for (const c of candidates) {
-                if (c[0] < best[0]) best = c;
+            const vb = seqB[j - 1];
+            let sum = 0;
+            for (let k = 0; k < dim; k++) {
+                const diff = va[k] - vb[k];
+                sum += diff * diff;
             }
-            cost[i][j] = d + best[0];
-            pathLen[i][j] = best[1] + 1;
+            const d = Math.sqrt(sum);
+
+            // insertion, deletion, match -- same order and the same strict
+            // "<" comparison as before, so ties resolve identically.
+            let bestCost = cost[prevRow + j];
+            let bestPath = pathLen[prevRow + j];
+            const deletion = cost[row + j - 1];
+            if (deletion < bestCost) {
+                bestCost = deletion;
+                bestPath = pathLen[row + j - 1];
+            }
+            const match = cost[prevRow + j - 1];
+            if (match < bestCost) {
+                bestCost = match;
+                bestPath = pathLen[prevRow + j - 1];
+            }
+            cost[row + j] = d + bestCost;
+            pathLen[row + j] = bestPath + 1;
         }
     }
 
-    const totalCost = cost[n][m];
-    const pathLength = pathLen[n][m];
+    const last = n * width + m;
+    const totalCost = cost[last];
+    const pathLength = pathLen[last];
     return {
         totalCost,
         normalizedCost: totalCost / pathLength,

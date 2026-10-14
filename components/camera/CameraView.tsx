@@ -11,6 +11,7 @@ import DebugTelemetryPanel from "@/components/translator/DebugTelemetryPanel";
 import StabilityBar from "@/components/translator/StabilityBar";
 import { toArabicChar, isControlSign, controlSignSymbol, type ControlSign } from "@/lib/ml/arabicLabels";
 import { preloadDynamicSignRegistry } from "@/lib/ml/dynamicSignRecognizer";
+import { RECOGNITION_MODES, type RecognitionMode } from "@/lib/ml/recognitionMode";
 
 
 function candidateDisplayLabel(label: string): string {
@@ -43,6 +44,10 @@ export default function CameraView() {
   const [arabicText, setArabicText] = useState("");
   const [telemetry, setTelemetry] = useState<FrameTelemetry | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [mode, setModeState] = useState<RecognitionMode>("letter");
+  const [wordTranscript, setWordTranscript] = useState<TranscriptEntry[]>([]);
+  const [manualCapture, setManualCapture] = useState(false);
+  const modeRef = useRef<RecognitionMode>("letter");
 
   const stopEverything = useCallback(() => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -72,7 +77,13 @@ export default function CameraView() {
           setTranscript((prev) => [...prev, tick.newTranscriptEntry!]);
         }
         if (tick.newDynamicSignEntry) {
-          setTranscript((prev) => [...prev, tick.newDynamicSignEntry!]);
+          // WORD results live in their own list. Only "both" mode also
+          // merges them into the letter transcript (the pipeline decides;
+          // this mirrors it for display).
+          setWordTranscript((prev) => [...prev, tick.newDynamicSignEntry!]);
+          if (modeRef.current === "both") {
+            setTranscript((prev) => [...prev, tick.newDynamicSignEntry!]);
+          }
         }
       }
       rafRef.current = requestAnimationFrame(() => loopRef.current());
@@ -96,7 +107,9 @@ export default function CameraView() {
 
       setState("loading-model");
       const [landmarker, metaRes] = await Promise.all([
-        HandLandmarkerService.create({ numHands: 1 }),
+        // TWO hands. Most KArSL signs are two-handed (477 of 502 in the
+        // registry), and the second hand is half the discriminative signal.
+        HandLandmarkerService.create({ numHands: 2 }),
         fetch("/models/arsl-31/metadata.json"),
       ]);
       // Dynamic KArSL recognition is additive: if this fails (e.g. no
@@ -114,7 +127,7 @@ export default function CameraView() {
         minStableFrames: meta.temporalWindow.minStableFrames,
         maxGapFrames: meta.temporalWindow.maxGapFrames,
         minFramesBetweenRepeats: 5,
-      });
+      }, undefined, modeRef.current);
       setMetadata(meta);
 
       pausedRef.current = false;
@@ -145,12 +158,67 @@ export default function CameraView() {
 
   const clearTranscript = useCallback(() => {
     setTranscript([]);
+    setWordTranscript([]);
     setArabicText("");
     pipelineRef.current?.clearTranscript();
   }, []);
 
+  /** Switching mode resets both state machines inside the pipeline, so
+   * frames buffered under one mode never contribute to the other's result. */
+  const setMode = useCallback((next: RecognitionMode) => {
+    modeRef.current = next;
+    setModeState(next);
+    setManualCapture(false);
+    pipelineRef.current?.setMode(next);
+  }, []);
+
+  const startManualCapture = useCallback(() => {
+    pipelineRef.current?.beginManualCapture();
+    setManualCapture(true);
+  }, []);
+
+  const finishManualCapture = useCallback(() => {
+    const pipeline = pipelineRef.current;
+    setManualCapture(false);
+    if (!pipeline) return;
+    const tick = pipeline.endManualCapture(performance.now());
+    setTelemetry(tick.telemetry);
+    if (tick.newDynamicSignEntry) {
+      setWordTranscript((prev) => [...prev, tick.newDynamicSignEntry!]);
+      if (modeRef.current === "both") setTranscript((prev) => [...prev, tick.newDynamicSignEntry!]);
+    }
+  }, []);
+
+  const wordModeActive = mode === "word" || mode === "both";
+  const lastWord = wordTranscript[wordTranscript.length - 1] ?? null;
+
   return (
     <div className="flex flex-col gap-4">
+      <div
+        role="radiogroup"
+        aria-label="Recognition mode"
+        className="flex rounded-full bg-[var(--color-surface)] p-1 border border-white/10"
+      >
+        {RECOGNITION_MODES.map((m) => (
+          <button
+            key={m}
+            role="radio"
+            aria-checked={mode === m}
+            onClick={() => setMode(m)}
+            className={`flex-1 py-2 rounded-full font-mono text-xs uppercase tracking-wide transition-colors ${mode === m
+              ? "bg-[var(--color-accent-active)] text-[#0B1220] font-semibold"
+              : "text-[var(--color-text-dim)]"
+              }`}
+          >
+            {m === "letter" ? "Letters" : m === "word" ? "KArSL Words" : "Both"}
+          </button>
+        ))}
+      </div>
+      <p className="font-mono text-[11px] text-[var(--color-text-dim)] -mt-2">
+        {mode === "letter" && "Static letter recognition only. Dynamic word matching is not running."}
+        {mode === "word" && "KArSL word mode: letters are never committed. One complete gesture = one sign."}
+        {mode === "both" && "Both paths run; letter and word results are kept in separate transcripts."}
+      </p>
       <div className="relative w-full aspect-[3/4] max-h-[60vh] rounded-2xl overflow-hidden bg-[var(--color-surface)] border border-white/10">
         <video
           ref={videoRef}
@@ -190,20 +258,55 @@ export default function CameraView() {
             </div>
 
             <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/70 to-transparent">
-              <StabilityBar state={telemetry?.segmentationState ?? "IDLE"} />
-              <p className="font-display text-3xl mt-2 min-h-[2rem]" dir="rtl" lang="ar">
-                {telemetry?.currentCandidate ? (
-                  candidateDisplayLabel(telemetry.currentCandidate)
-                ) : (
-                  <span dir="ltr" className="text-[var(--color-text-dim)] text-base">
-                    No sign detected
-                  </span>
-                )}
-              </p>
-              {telemetry && telemetry.rawConfidence > 0 && (
-                <p className="font-mono text-xs text-[var(--color-text-dim)]">
-                  confidence {(telemetry.rawConfidence * 100).toFixed(0)}%
-                </p>
+              {mode === "word" ? (
+                <>
+                  <div className="font-mono text-xs text-[var(--color-text-dim)]">
+                    {telemetry?.dynamicPhase === "buffering"
+                      ? `capturing gesture — ${telemetry.dynamicGestureFrameCount} frames${telemetry.dynamicManualCapture ? " (manual)" : ""}`
+                      : telemetry?.dynamicPhase === "classifying"
+                        ? "classifying complete gesture…"
+                        : "waiting for a sign"}
+                  </div>
+                  <p className="font-display text-3xl mt-1 min-h-[2rem]" dir="rtl" lang="ar">
+                    {lastWord ? (
+                      lastWord.displayLabel
+                    ) : (
+                      <span dir="ltr" className="text-[var(--color-text-dim)] text-base">
+                        No sign recognized yet
+                      </span>
+                    )}
+                  </p>
+                  {telemetry?.lastDynamicAccepted === false && (
+                    <p className="font-mono text-xs text-[var(--color-accent-error)]">
+                      rejected: {telemetry.lastDynamicRejectionReason} (best {telemetry.lastDynamicBestText ?? "-"} @{" "}
+                      {telemetry.lastDynamicBestDistance?.toFixed(3)}, ratio{" "}
+                      {telemetry.lastDynamicBestToSecondBestRatio?.toFixed(3)})
+                    </p>
+                  )}
+                  {telemetry?.gestureDiscardedThisFrame && (
+                    <p className="font-mono text-xs text-[var(--color-accent-error)]">
+                      gesture discarded before classification: {telemetry.gestureDiscardReason}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <StabilityBar state={telemetry?.segmentationState ?? "IDLE"} />
+                  <p className="font-display text-3xl mt-2 min-h-[2rem]" dir="rtl" lang="ar">
+                    {telemetry?.currentCandidate ? (
+                      candidateDisplayLabel(telemetry.currentCandidate)
+                    ) : (
+                      <span dir="ltr" className="text-[var(--color-text-dim)] text-base">
+                        No sign detected
+                      </span>
+                    )}
+                  </p>
+                  {telemetry && telemetry.rawConfidence > 0 && (
+                    <p className="font-mono text-xs text-[var(--color-text-dim)]">
+                      confidence {(telemetry.rawConfidence * 100).toFixed(0)}%
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </>
@@ -227,7 +330,55 @@ export default function CameraView() {
         </div>
       )}
 
-      <TranscriptPanel transcript={transcript} arabicText={arabicText} onClear={clearTranscript} />
+      {(state === "streaming" || state === "paused") && wordModeActive && (
+        <button
+          onPointerDown={startManualCapture}
+          onPointerUp={finishManualCapture}
+          onPointerLeave={() => manualCapture && finishManualCapture()}
+          className={`py-4 rounded-full font-semibold transition-colors ${manualCapture
+            ? "bg-[var(--color-accent-error)] text-[#0B1220]"
+            : "border border-white/20 text-[var(--color-text)]"
+            }`}
+        >
+          {manualCapture ? "Recording sign — release to classify" : "Hold to capture one sign"}
+        </button>
+      )}
+
+      {wordModeActive && (
+        <section
+          className="rounded-2xl bg-[var(--color-surface)] border border-white/10 p-4"
+          aria-label="Recognized KArSL signs"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="font-mono text-xs uppercase tracking-wide text-[var(--color-text-dim)]">
+              Recognized KArSL signs
+            </h2>
+            <button onClick={clearTranscript} className="font-mono text-xs text-[var(--color-text-dim)] underline">
+              clear ({wordTranscript.length})
+            </button>
+          </div>
+          {wordTranscript.length === 0 ? (
+            <p className="font-mono text-xs text-[var(--color-text-dim)] mt-2">
+              Nothing recognized yet. Turn the debug panel on to see which stage is stopping.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-1" dir="rtl" lang="ar">
+              {wordTranscript.map((e) => (
+                <li key={e.id} className="flex items-baseline justify-between gap-3">
+                  <span className="font-display text-2xl">{e.displayLabel}</span>
+                  <span dir="ltr" className="font-mono text-xs text-[var(--color-text-dim)]">
+                    {e.sign} · conf {(e.confidence * 100).toFixed(0)}%
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {mode !== "word" && (
+        <TranscriptPanel transcript={transcript} arabicText={arabicText} onClear={clearTranscript} />
+      )}
 
       {showDebug && <DebugTelemetryPanel telemetry={telemetry} metadata={metadata} />}
     </div>

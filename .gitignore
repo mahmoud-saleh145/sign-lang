@@ -52,3 +52,40 @@ __pycache__/
 /KArSL/
 /processed-karsl/
 /ml/training/.cache/
+# Generated recognition artifacts -- rebuilt from processed-karsl/, never edited
+# by hand and too large to be worth committing:
+#   npx tsx scripts/build-prototypes.ts
+#   npx tsx scripts/build-prototypes.ts --held-out --out public/models/sign-vocabulary/sign-prototypes.eval.json
+public/models/sign-vocabulary/sign-prototypes.json
+public/models/sign-vocabulary/sign-prototypes.eval.json
+
+# The re-extracted corpus. "/processed-karsl/" above matches that exact name
+# only, so the v2 tree and the one-hand-era tree were both still committable --
+# roughly 2-3 GB of JSON between them. A failed push still leaves the objects
+# in .git permanently, so these are listed explicitly.
+/processed-karsl-v2/
+/processed-karsl.old-onehand/
+
+# Generated audit and inventory reports, rebuilt by
+# ml/datasets/audit_processed_karsl.py and ml/training/inventory_karsl.py.
+/karsl-audit.json
+/karsl-audit-v2.json
+/karsl-exclusions.json
+/karsl-inventory.json
+
+# Stage 2 experiment OUTPUTS: exported tensors, checkpoints, saved
+# probabilities, DTW baselines. All regenerable, and tensors.f32 alone is
+# ~200 MB -- twice GitHub's per-file limit. The experiment CODE lives one
+# level up (export_tensors.ts, train_tcn.py, fuse.py, ...) and stays tracked.
+/ml/experiments/*/data/
+/ml/experiments/*/runs/
+
+# Download folder for files Claude sends, and the commit scaffolding. Neither
+# is part of the project; "Claude outputs" is also excluded in tsconfig.json
+# because it is recreated on every download.
+/Claude outputs/
+/claude-commits/
+
+# Patch files Claude generated while staging this work. Superseded: every
+# change they carry is already in the working tree or already committed.
+/claude-patches/

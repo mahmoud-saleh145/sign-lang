@@ -36,7 +36,7 @@ export class HandLandmarkerService {
         delegate: "GPU",
       },
       runningMode: "VIDEO",
-      numHands: options.numHands ?? 1,
+      numHands: options.numHands ?? 2,
       minHandDetectionConfidence: options.minHandDetectionConfidence ?? 0.6,
       minHandPresenceConfidence: options.minHandPresenceConfidence ?? 0.6,
       minTrackingConfidence: options.minTrackingConfidence ?? 0.6,
@@ -55,7 +55,14 @@ export class HandLandmarkerService {
       const handednessInfo = result.handedness[i]?.[0];
       return {
         landmarks: landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z })),
-        handedness: (handednessInfo?.categoryName as Handedness) ?? "Right",
+        // No fallback label. An absent handedness is reported as absent, not
+        // silently called "Right" -- with two hands that fallback would have
+        // collapsed both detections onto one side. Naming happens later, over
+        // the whole gesture, in lib/ml/handSides.ts.
+        handedness:
+          handednessInfo?.categoryName === "Left" || handednessInfo?.categoryName === "Right"
+            ? (handednessInfo.categoryName as Handedness)
+            : null,
         score: handednessInfo?.score ?? 0,
       };
     });

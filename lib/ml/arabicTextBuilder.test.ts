@@ -128,12 +128,94 @@ describe("ArabicTextBuilder", () => {
     expect(result.text).toBe("\u0627");
   });
 
-  it("appendLiteralText appends a recognized KArSL phrase verbatim, with no auto-added spacing", () => {
+  // CONTRACT CHANGED DELIBERATELY. This case used to assert that no spacing was
+  // ever added, which produced "\u0645\u0631\u062d\u0628\u0627\u0634\u0643\u0631\u0627" for two consecutively recognized
+  // dynamic signs -- the reported bug. The phrase is still committed VERBATIM
+  // and is still never split; what changed is that a separator is inserted
+  // BEFORE it when the text does not already end at a word boundary.
+  it("appendLiteralText commits a KArSL phrase verbatim, and separates it from preceding text", () => {
     const builder = new ArabicTextBuilder();
     builder.applyCommittedLabel("Alef");
     const result = builder.appendLiteralText("\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629");
     expect(result.action).toBe("append");
-    expect(result.text).toBe("\u0627\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629");
+    // "\u0627" + boundary + the phrase, whose own internal space is untouched.
+    expect(result.text).toBe("\u0627 \u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629");
+    // The phrase survives as one contiguous substring: it was not split.
+    expect(result.text).toContain("\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629");
+  });
+
+  // ==========================================================================
+  // DYNAMIC WORD BOUNDARIES (Phase 3). The distinction these pin down is
+  // "two separate dynamic signs" vs "one multi-word KArSL label", decided by
+  // HOW MANY append calls arrive -- never by inspecting the label text.
+  // ==========================================================================
+
+  it("a single dynamic word stands alone with no stray separator", () => {
+    const builder = new ArabicTextBuilder();
+    const r = builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    expect(r.text).toBe("\u0645\u0631\u062d\u0628\u0627");
+  });
+
+  it("TWO dynamic words are separated: \u0645\u0631\u062d\u0628\u0627 + \u0634\u0643\u0631\u0627 -> '\u0645\u0631\u062d\u0628\u0627 \u0634\u0643\u0631\u0627', never '\u0645\u0631\u062d\u0628\u0627\u0634\u0643\u0631\u0627'", () => {
+    const builder = new ArabicTextBuilder();
+    builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    const r = builder.appendLiteralText("\u0634\u0643\u0631\u0627");
+    expect(r.text).toBe("\u0645\u0631\u062d\u0628\u0627 \u0634\u0643\u0631\u0627");
+    expect(r.text).not.toBe("\u0645\u0631\u062d\u0628\u0627\u0634\u0643\u0631\u0627");
+    expect(r.text.split(" ")).toHaveLength(2);
+  });
+
+  it("a multi-word dedicated KArSL label stays ONE sign and is not split", () => {
+    const builder = new ArabicTextBuilder();
+    const phrase = "\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629";
+    const r = builder.appendLiteralText(phrase);
+    // Exactly the label, byte for byte -- no leading separator, no re-spacing.
+    expect(r.text).toBe(phrase);
+  });
+
+  it("a multi-word label followed by another dynamic word yields three words, not a merge", () => {
+    const builder = new ArabicTextBuilder();
+    const phrase = "\u0625\u0633\u0639\u0627\u0641\u0627\u062a \u0623\u0648\u0644\u064a\u0629";
+    builder.appendLiteralText(phrase);
+    const r = builder.appendLiteralText("\u0634\u0643\u0631\u0627");
+    expect(r.text).toBe(`${phrase} \u0634\u0643\u0631\u0627`);
+    expect(r.text).toContain(phrase);
+    expect(r.text.split(" ")).toHaveLength(3);
+  });
+
+  it("the SAME dynamic word recognized twice appears twice, separated", () => {
+    const builder = new ArabicTextBuilder();
+    builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    const r = builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    expect(r.text).toBe("\u0645\u0631\u062d\u0628\u0627 \u0645\u0631\u062d\u0628\u0627");
+  });
+
+  it("a spelled letter after a dynamic word starts a new word; letters after letters do not", () => {
+    const builder = new ArabicTextBuilder();
+    builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    builder.applyCommittedLabel("Alef");
+    // boundary inserted once, before the first letter of the new word
+    expect(builder.getText()).toBe("\u0645\u0631\u062d\u0628\u0627 \u0627");
+    builder.applyCommittedLabel("Ba2");
+    // the second letter continues the SAME word
+    expect(builder.getText()).toBe("\u0645\u0631\u062d\u0628\u0627 \u0627\u0628");
+  });
+
+  it("an explicit Space before a dynamic word does not produce a double separator", () => {
+    const builder = new ArabicTextBuilder();
+    builder.applyCommittedLabel("Alef");
+    builder.applyCommittedLabel("Space");
+    const r = builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    expect(r.text).toBe("\u0627 \u0645\u0631\u062d\u0628\u0627");
+    expect(r.text).not.toContain("  ");
+  });
+
+  it("reset clears the word-boundary state as well as the text", () => {
+    const builder = new ArabicTextBuilder();
+    builder.appendLiteralText("\u0645\u0631\u062d\u0628\u0627");
+    builder.reset();
+    const r = builder.appendLiteralText("\u0634\u0643\u0631\u0627");
+    expect(r.text).toBe("\u0634\u0643\u0631\u0627");
   });
 
   it("appendLiteralText composes correctly with Space and letters (existing behavior unaffected)", () => {

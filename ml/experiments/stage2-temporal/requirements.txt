@@ -1,0 +1,4 @@
+# Stage 2 experiment ONLY. Not required by the app, the browser bundle, or any
+# other part of ml/. Install into the project venv when running the experiment.
+torch>=2.0
+numpy>=1.24

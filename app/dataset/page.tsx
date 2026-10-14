@@ -97,6 +97,9 @@ export default function DatasetCollectionPage() {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      // The letter-dataset recorder is deliberately still single-hand: the
+      // ArSL alphabet it records is one-handed, and its stored sample shape
+      // (one landmarkSequence) is what the letter model consumes.
       landmarkerRef.current = await HandLandmarkerService.create({ numHands: 1 });
       setStage("ready");
       rafRef.current = requestAnimationFrame(detectionLoop);

@@ -11,7 +11,13 @@ export default function TranslatorPage() {
   const [mode, setMode] = useState<Mode>("sign");
 
   return (
-    <main className="min-h-dvh flex flex-col max-w-lg mx-auto p-4 gap-4">
+    // Voice -> Sign is a two-column layout built around a large avatar stage,
+    // so it needs a much wider container than the single-column camera and
+    // speech views.
+    <main
+      className={`min-h-dvh flex flex-col mx-auto p-4 gap-4 w-full ${mode === "voice-to-sign" ? "max-w-6xl" : "max-w-lg"
+        }`}
+    >
       <header className="flex items-center justify-between pt-2">
         <h1 className="font-display text-xl font-semibold">Translator</h1>
       </header>

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DynamicGestureBuffer, DEFAULT_GESTURE_BUFFER_CONFIG } from "./dynamicGestureBuffer";
 import type { HandLandmarks } from "@/types/landmarks";
+import type { SlotFrame } from "./handSlotTracker";
 
 // SYNTHETIC fixtures only -- no real KArSL motion data was available when
 // these were written. staticPose() and movingPose() are just numeric
@@ -14,11 +15,29 @@ function movingPose(step: number): HandLandmarks {
     return Array.from({ length: 21 }, (_, i) => ({ x: 0.1 + 0.05 * step + i * 0.001, y: 0.2 + 0.05 * step, z: 0 }));
 }
 
+/**
+ * One tracked hand in slot 0, exactly as the slot tracker would hand it over.
+ *
+ * The MediaPipe label is present on purpose. With only one hand there are no
+ * both-hand frames for the geometric vote, so the label is the ONLY signal
+ * lib/ml/handSides.ts can name a side from; an unlabelled single hand is
+ * correctly reported as a hand of unknown side and never reaches
+ * `completedGesture` at all. These tests are about buffering and finalization,
+ * not about side inference, so the hand is labelled and the finalized gesture
+ * lands on the signer's right.
+ */
+function oneHand(landmarks: HandLandmarks): SlotFrame {
+    return [{ landmarks, handedness: "Right", score: 1 }, null];
+}
+
+/** A frame in which the tracker saw no hand at all. */
+const NO_HANDS: SlotFrame = [null, null];
+
 describe("DynamicGestureBuffer", () => {
     it("starts idle and stays idle while no hand is present", () => {
         const buf = new DynamicGestureBuffer();
         for (let i = 0; i < 10; i++) {
-            const result = buf.step(null);
+            const result = buf.step(NO_HANDS);
             expect(result.state).toBe("idle");
             expect(result.completedGesture).toBeNull();
         }
@@ -26,16 +45,16 @@ describe("DynamicGestureBuffer", () => {
 
     it("begins buffering as soon as a hand appears", () => {
         const buf = new DynamicGestureBuffer();
-        const result = buf.step(movingPose(0));
+        const result = buf.step(oneHand(movingPose(0)));
         expect(result.state).toBe("buffering");
     });
 
     it("finalizes and returns a completed gesture after the hand disappears for endGapFrames", () => {
         const buf = new DynamicGestureBuffer({ ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 5 });
-        for (let i = 0; i < 15; i++) buf.step(movingPose(i));
+        for (let i = 0; i < 15; i++) buf.step(oneHand(movingPose(i)));
         let last;
         for (let i = 0; i < DEFAULT_GESTURE_BUFFER_CONFIG.endGapFrames; i++) {
-            last = buf.step(null);
+            last = buf.step(NO_HANDS);
         }
         expect(last!.completedGesture).not.toBeNull();
         expect(last!.completedGesture!.length).toBe(15);
@@ -43,10 +62,10 @@ describe("DynamicGestureBuffer", () => {
 
     it("discards a completed buffer that is too short (below minGestureFrames)", () => {
         const buf = new DynamicGestureBuffer({ ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 20 });
-        for (let i = 0; i < 5; i++) buf.step(movingPose(i)); // well below 20
+        for (let i = 0; i < 5; i++) buf.step(oneHand(movingPose(i))); // well below 20
         let last;
         for (let i = 0; i < DEFAULT_GESTURE_BUFFER_CONFIG.endGapFrames; i++) {
-            last = buf.step(null);
+            last = buf.step(NO_HANDS);
         }
         expect(last!.completedGesture).toBeNull();
         expect(last!.discardedAsNonDynamic).toBe(true);
@@ -54,10 +73,10 @@ describe("DynamicGestureBuffer", () => {
 
     it("discards a completed buffer that shows too little motion (looks like a held static letter)", () => {
         const buf = new DynamicGestureBuffer({ ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 5 });
-        for (let i = 0; i < 20; i++) buf.step(staticPose()); // held perfectly still
+        for (let i = 0; i < 20; i++) buf.step(oneHand(staticPose())); // held perfectly still
         let last;
         for (let i = 0; i < DEFAULT_GESTURE_BUFFER_CONFIG.endGapFrames; i++) {
-            last = buf.step(null);
+            last = buf.step(NO_HANDS);
         }
         expect(last!.completedGesture).toBeNull();
         expect(last!.discardedAsNonDynamic).toBe(true);
@@ -65,11 +84,11 @@ describe("DynamicGestureBuffer", () => {
 
     it("does NOT finalize on brief gaps shorter than endGapFrames -- absorbs brief tracking dropout", () => {
         const buf = new DynamicGestureBuffer({ ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 5 });
-        for (let i = 0; i < 10; i++) buf.step(movingPose(i));
-        const briefGap = buf.step(null); // just 1 frame of gap, well under endGapFrames
+        for (let i = 0; i < 10; i++) buf.step(oneHand(movingPose(i)));
+        const briefGap = buf.step(NO_HANDS); // just 1 frame of gap, well under endGapFrames
         expect(briefGap.completedGesture).toBeNull();
         expect(briefGap.state).toBe("buffering"); // still buffering, not reset
-        const resumed = buf.step(movingPose(10));
+        const resumed = buf.step(oneHand(movingPose(10)));
         expect(resumed.state).toBe("buffering");
     });
 
@@ -77,7 +96,7 @@ describe("DynamicGestureBuffer", () => {
         const buf = new DynamicGestureBuffer({ ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 5, maxGestureFrames: 1000 });
         const results = [];
         for (let i = 0; i < 200; i++) {
-            results.push(buf.step(movingPose(i)));
+            results.push(buf.step(oneHand(movingPose(i))));
         }
         const completions = results.filter((r) => r.completedGesture !== null);
         expect(completions).toHaveLength(0); // hand never dropped -- no finalize yet
@@ -87,7 +106,7 @@ describe("DynamicGestureBuffer", () => {
         const buf = new DynamicGestureBuffer({ ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 5, maxGestureFrames: 30 });
         let completed = null;
         for (let i = 0; i < 30; i++) {
-            const r = buf.step(movingPose(i));
+            const r = buf.step(oneHand(movingPose(i)));
             if (r.completedGesture) completed = r.completedGesture;
         }
         expect(completed).not.toBeNull();
@@ -97,20 +116,20 @@ describe("DynamicGestureBuffer", () => {
     it("allows a new gesture to begin immediately after one completes -- no artificial extra delay", () => {
         const config = { ...DEFAULT_GESTURE_BUFFER_CONFIG, minGestureFrames: 5 };
         const buf = new DynamicGestureBuffer(config);
-        for (let i = 0; i < 10; i++) buf.step(movingPose(i));
-        for (let i = 0; i < config.endGapFrames; i++) buf.step(null); // ends gesture 1
+        for (let i = 0; i < 10; i++) buf.step(oneHand(movingPose(i)));
+        for (let i = 0; i < config.endGapFrames; i++) buf.step(NO_HANDS); // ends gesture 1
 
         // Very next frame with a hand should start buffering again immediately.
-        const result = buf.step(movingPose(100));
+        const result = buf.step(oneHand(movingPose(100)));
         expect(result.state).toBe("buffering");
     });
 
     it("reset() clears any in-progress buffer", () => {
         const buf = new DynamicGestureBuffer();
-        buf.step(movingPose(0));
-        buf.step(movingPose(1));
+        buf.step(oneHand(movingPose(0)));
+        buf.step(oneHand(movingPose(1)));
         buf.reset();
-        const result = buf.step(null);
+        const result = buf.step(NO_HANDS);
         expect(result.state).toBe("idle");
     });
 });

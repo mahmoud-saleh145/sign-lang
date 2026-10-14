@@ -68,6 +68,23 @@ function makeEntry(text: string, sourceSignId: string, frames: HandLandmarks[]) 
     return {
         text,
         landmarkSequence: frames.map((frame) => frame.map((p) => ({ x: p.x, y: p.y, z: p.z }))),
+        // The recognizer is side-aware, so a registry entry has to say which
+        // hand its motion is. These fixtures are one-handed on the RIGHT,
+        // matching the single "Right"-labelled hand the streams below feed in.
+        handFrames: frames.map((frame) => ({
+            left: null,
+            right: frame.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+        })),
+        handedness: {
+            twoHanded: false,
+            framesWithLeft: 0,
+            framesWithRight: frames.length,
+            framesWithBoth: 0,
+            primaryHand: "right",
+            sideSource: "handedness-label" as const,
+            sideConfidence: 1,
+            geometryFrames: 0,
+        },
         provenance: {
             datasetName: "TEST-FIXTURE-NOT-REAL-KARSL",
             source: "unit test only",
@@ -253,7 +270,10 @@ describe("SignRecognitionPipeline — combined static-letter + dynamic-KArSL rec
             { kind: "idle", frames: 10 },
         ]);
         stream.forEach((f) => pipeline.processFrame(f));
-        expect(pipeline.getArabicText()).toBe("\u0645\u0631\u062d\u0628\u0627\u0627"); // مرحبا + ا
+        // CONTRACT CHANGED (dynamic word boundaries): a spelled letter after a whole
+        // recognized word starts a NEW word, so these no longer merge into
+        // "مرحباا". See lib/ml/arabicTextBuilder.ts.
+        expect(pipeline.getArabicText()).toBe("\u0645\u0631\u062d\u0628\u0627 \u0627"); // مرحبا + ا
     });
 
     it("a real letter followed by a dynamic sign both appear correctly, in order", () => {
@@ -265,7 +285,9 @@ describe("SignRecognitionPipeline — combined static-letter + dynamic-KArSL rec
             { kind: "idle", frames: 10 },
         ]);
         stream.forEach((f) => pipeline.processFrame(f));
-        expect(pipeline.getArabicText()).toBe("\u0627\u0645\u0631\u062d\u0628\u0627"); // ا + مرحبا
+        // CONTRACT CHANGED (dynamic word boundaries): a recognized word after a
+        // spelled letter is a separate word, so these no longer merge.
+        expect(pipeline.getArabicText()).toBe("\u0627 \u0645\u0631\u062d\u0628\u0627"); // ا + مرحبا
     });
 
     it("Space still works correctly alongside the dynamic path", () => {
@@ -294,7 +316,8 @@ describe("SignRecognitionPipeline — combined static-letter + dynamic-KArSL rec
         ]);
         stream.forEach((f) => pipeline.processFrame(f));
         // ا + مرحبا, then Delete removes only the LAST character of "مرحبا"
-        expect(pipeline.getArabicText()).toBe("\u0627\u0645\u0631\u062d\u0628"); // ا + مرحب (ا dropped)
+        // Delete still removes EXACTLY ONE character; only the word boundary is new.
+        expect(pipeline.getArabicText()).toBe("\u0627 \u0645\u0631\u062d\u0628"); // ا + مرحب (ا dropped)
     });
 
     it("Finish still behaves as a no-op on text, unaffected by the dynamic path", () => {

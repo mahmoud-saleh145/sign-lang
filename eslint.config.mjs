@@ -12,6 +12,21 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local-only trees that are not project source. Without these, `eslint`
+    // walks the Python virtualenv and reports unused-variable warnings out of
+    // third-party packages (e.g. .venv/.../sklearn/...), which is noise from
+    // code this project does not own. The "Claude outputs" / "claude-*"
+    // directories are the download drop-folder and are already excluded in
+    // tsconfig.json and vitest.config.ts; keep the three lists in step.
+    ".venv/**",
+    "node_modules/**",
+    "Claude outputs/**",
+    "claude-commits/**",
+    "claude-patches/**",
+    // Generated corpora: local-only, multi-GB, never source.
+    "processed-karsl*/**",
+    "KArSL/**",
+    "data/**",
   ]),
 ]);
 

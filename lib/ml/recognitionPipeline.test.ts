@@ -4,6 +4,8 @@ import path from "path";
 import { ArSLClassifier } from "./model";
 import type { ModelWeights } from "./model";
 import { SignRecognitionPipeline } from "./recognitionPipeline";
+import { DEFAULT_SEGMENTATION_CONFIG } from "./segmentation";
+import { DEFAULT_GESTURE_BUFFER_CONFIG } from "./dynamicGestureBuffer";
 import { extractFeatures } from "./features";
 import type { FrameDetection, HandLandmarks } from "@/types/landmarks";
 
@@ -312,5 +314,142 @@ describe("SignRecognitionPipeline — word spacing (real Space class, real model
     // no button press simulated anywhere between signs or words.
     stream.forEach((f) => pipeline.processFrame(f));
     expect(pipeline.getArabicText()).toBe("\u0627\u0646\u0627 \u0628\u0627"); // انا با
+  });
+});
+/**
+ * WORD-MODE OBSERVABILITY.
+ *
+ * These reproduce the exact field pattern reported from real-world testing:
+ * a completed 45-frame gesture sitting beside "classifier running no",
+ * "candidate count -", "FINAL DECISION -" and "captured frames L/R 0 / 0".
+ *
+ * None of that meant the classifier had not run. Every lastDynamic* field was
+ * read from a local that is non-null only on the single frame a gesture
+ * finalizes, so one frame later they all collapsed -- and "captured frames
+ * L/R 0 / 0" was a hardcoded default, never a measurement. The one field with
+ * a persisted fallback (side source) kept its value, which is what made the
+ * panel look self-contradictory.
+ *
+ * The tests below pin the LATCHING, not the recognition. No threshold, gate
+ * or matcher behaviour is asserted here.
+ */
+describe("SignRecognitionPipeline — word-mode classification telemetry", () => {
+  let classifier: ArSLClassifier;
+  beforeAll(() => {
+    classifier = new ArSLClassifier(weights);
+  });
+
+  /** Runs a gesture long enough to finalize, then idle frames after it. */
+  function runGestureThenIdle(gestureFrames: number, idleFrames: number) {
+    const pipeline = new SignRecognitionPipeline(classifier, DEFAULT_SEGMENTATION_CONFIG, DEFAULT_GESTURE_BUFFER_CONFIG, "word");
+    const stream = buildStream([
+      { label: "Alef", frames: gestureFrames },
+      { label: null, frames: idleFrames },
+    ]);
+    return stream.map((f) => pipeline.processFrame(f).telemetry);
+  }
+
+  it("keeps the classification visible after the gesture ends (two-tick)", () => {
+    const ticks = runGestureThenIdle(45, 20);
+    const at = ticks.findIndex((t) => t.framesSinceLastClassification === 0);
+    expect(at, "no frame ever reported a fresh classification").toBeGreaterThan(-1);
+
+    const produced = ticks[at];
+    const later = ticks[ticks.length - 1];
+
+    // THE REGRESSION: every one of these used to be null/"-"/0 one frame on.
+    expect(later.dynamicOutcome).toBe(produced.dynamicOutcome);
+    expect(later.lastDynamicCandidateCount).toBe(produced.lastDynamicCandidateCount);
+    expect(later.lastDynamicBestSignId).toBe(produced.lastDynamicBestSignId);
+    expect(later.lastDynamicBestDistance).toBe(produced.lastDynamicBestDistance);
+    expect(later.lastDynamicSecondBestDistance).toBe(produced.lastDynamicSecondBestDistance);
+    expect(later.lastDynamicBestToSecondBestRatio).toBe(produced.lastDynamicBestToSecondBestRatio);
+    expect(later.lastDynamicAccepted).toBe(produced.lastDynamicAccepted);
+    expect(later.lastDynamicRejectionReason).toBe(produced.lastDynamicRejectionReason);
+    expect(later.lastDynamicQuerySideFrames).toEqual(produced.lastDynamicQuerySideFrames);
+  });
+
+  it("never reports 0/0 captured frames for a gesture that was classified", () => {
+    // "captured frames L/R 0 / 0" was the `?? { left: 0, right: 0 }` default,
+    // indistinguishable from a real measurement of zero.
+    const ticks = runGestureThenIdle(45, 20);
+    const classified = ticks.filter((t) => t.framesSinceLastClassification === 0);
+    for (const t of classified) {
+      const { left, right } = t.lastDynamicQuerySideFrames;
+      expect(left + right, "a classified gesture reported no captured frames").toBeGreaterThan(0);
+    }
+  });
+
+  it("ages the displayed result so a stale reading is visibly stale", () => {
+    const ticks = runGestureThenIdle(45, 20);
+    const at = ticks.findIndex((t) => t.framesSinceLastClassification === 0);
+    expect(ticks[at + 1]?.framesSinceLastClassification).toBe(1);
+    expect(ticks[at + 2]?.framesSinceLastClassification).toBe(2);
+    // ...and it is null before anything has been classified.
+    expect(ticks[0].framesSinceLastClassification).toBeNull();
+  });
+
+  it("reports not-yet-run before any gesture finalizes, and never after one does", () => {
+    const ticks = runGestureThenIdle(45, 20);
+    expect(ticks[0].dynamicOutcome).toBe("not-yet-run");
+    const at = ticks.findIndex((t) => t.framesSinceLastClassification === 0);
+    for (const t of ticks.slice(at)) {
+      expect(t.dynamicOutcome).not.toBe("not-yet-run");
+    }
+  });
+
+  it("an outcome always accompanies a non-running classifier", () => {
+    // The reported symptom: "classifier running no" with nothing to explain it.
+    const ticks = runGestureThenIdle(45, 20);
+    for (const t of ticks.slice(-5)) {
+      expect(t.dynamicPhase).not.toBe("classifying");
+      expect(t.dynamicOutcome).toBeTruthy();
+      expect(t.dynamicOutcome).not.toBe("not-yet-run");
+    }
+  });
+
+  it("a gesture too short to classify is reported as discarded, not as a rejection", () => {
+    const ticks = runGestureThenIdle(3, 15);
+    const final = ticks[ticks.length - 1];
+    expect(final.dynamicOutcome).toBe("discarded-by-segmentation");
+    expect(final.gestureDiscardReason).toBe("too-few-frames");
+    // The classifier genuinely never ran, so there is nothing to display.
+    expect(final.framesSinceLastClassification).toBeNull();
+    expect(final.lastDynamicCandidateCount).toBeNull();
+  });
+
+  it("a newly discarded gesture does not leave the previous verdict on screen", () => {
+    // Otherwise the panel describes two different gestures at once.
+    const pipeline = new SignRecognitionPipeline(classifier, DEFAULT_SEGMENTATION_CONFIG, DEFAULT_GESTURE_BUFFER_CONFIG, "word");
+    const stream = buildStream([
+      { label: "Alef", frames: 45 },
+      { label: null, frames: 15 },
+      { label: "Alef", frames: 3 },
+      { label: null, frames: 15 },
+    ]);
+    const ticks = stream.map((f) => pipeline.processFrame(f).telemetry);
+    const final = ticks[ticks.length - 1];
+    expect(final.dynamicOutcome).toBe("discarded-by-segmentation");
+    expect(final.lastDynamicBestSignId).toBeNull();
+    expect(final.framesSinceLastClassification).toBeNull();
+  });
+
+  it("separates per-gesture tracker swaps from the session total", () => {
+    // 299 swaps beside a 45-frame gesture looked like a defect; it was the
+    // session-cumulative counter with no label saying so.
+    const ticks = runGestureThenIdle(45, 20);
+    const final = ticks[ticks.length - 1];
+    expect(final.lastGestureTrackerSwitches).not.toBeNull();
+    expect(final.lastGestureTrackerSwitches!).toBeLessThanOrEqual(final.lastDynamicTrackerSwitches!);
+  });
+
+  it("word mode leaves the letter transcript untouched", () => {
+    // Guards the "recognition behaviour unchanged" claim from the side the
+    // telemetry work could plausibly have disturbed.
+    const pipeline = new SignRecognitionPipeline(classifier, DEFAULT_SEGMENTATION_CONFIG, DEFAULT_GESTURE_BUFFER_CONFIG, "word");
+    const stream = buildStream([{ label: "Alef", frames: 45 }, { label: null, frames: 15 }]);
+    const results = stream.map((f) => pipeline.processFrame(f));
+    expect(results.every((r) => r.newTranscriptEntry === null)).toBe(true);
+    expect(pipeline.getArabicText()).toBe("");
   });
 });

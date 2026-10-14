@@ -15,6 +15,25 @@ device.
   anywhere in this project. The underlying dataset contains isolated hand
   poses, not continuous sentences — see `docs/CONTINUOUS_RECOGNITION.md` for
   exactly what that does and doesn't support, and why.
+- **KArSL word/phrase signs (added after this section was first written)**: the
+  statement above that there is "no word dictionary anywhere in this project"
+  is no longer true. `public/models/sign-vocabulary/dedicated-signs.json` now
+  holds **432 real KArSL word and phrase signs** (18,101 recorded takes; 420
+  two-handed, 12 one-handed; 0 single-letter entries), matched by DTW against
+  side-aware prototypes. Measured on 856 held-out takes the top-1 neighbour is
+  correct **75.6%** of the time, but only **37.5%** of queries are both accepted
+  *and* correct at the shipped confidence gate - it abstains far more often
+  than it is right, by design. The 70 KArSL signs absent from the registry
+  (IDs 0001-0070) are the alphabet signs, served by the ArSL-31 model instead;
+  that is not data loss. The vocabulary is a **technical/anatomical glossary**,
+  not general everyday Arabic. Do not read this as sentence-level Arabic Sign
+  Language translation: there is no grammar model, and none of it has been
+  validated with native signers.
+- **Voice → Sign**: Arabic speech *or* typed text is looked up in that same
+  432-sign registry. A supported word produces its real recorded sign; anything
+  else falls back to letter-by-letter spelling, marked distinguishably in the
+  output (`spelled-letter` vs a real word sign) rather than silently
+  substituted. See `docs/KARSL_DYNAMIC_RECOGNITION.md`.
 - **Speech → Text**: browser-native speech recognition, swappable for a
   production service later (`lib/speech/speechRecognition.ts`).
 - Model test accuracy is **99.43%**, but the dataset has no signer-ID
